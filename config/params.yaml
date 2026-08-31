@@ -1,0 +1,35 @@
+neuron:
+  # Morris-Lecar parameters (Sourikopoulos 2017, simplified variant)
+  Cm: 4.0e-15       # membrane capacitance (F)
+  Ck: 8.0e-15       # potassium capacitance (F)
+  Gna: 1.0e-9       # sodium conductance (S)
+  Gk: 2.0e-9        # potassium conductance (S)
+  GL: 0.5e-9        # leak conductance (S)
+  Vd: 0.1           # supply voltage (V)
+  V1: -0.01         # ML fitting parameter (V)
+  V2: 0.15          # ML fitting parameter (V)
+  V3: 0.1           # ML fitting parameter (V)
+  V4: 0.145         # ML fitting parameter (V)
+  lambda0: 1.0e3    # reference frequency (Hz)
+  ECa: 0.12         # calcium Nernst potential (V)
+  EK: -0.084        # potassium Nernst potential (V)
+  EL: -0.06         # leak Nernst potential (V)
+
+encoding:
+  T: 10             # nombre de timesteps
+  Iex_min: 10.0e-12 # courant minimum (A)
+  Iex_max: 150.0e-12 # courant maximum (A)
+
+ris:
+  N: 32             # nombre d'éléments RIS
+  n_bits: 2         # bits de quantification
+  K: 1              # nombre d'utilisateurs
+
+channel:
+  K_rician: 3       # facteur K Rician
+  sigma2: 1.0       # bruit
+
+simulation:
+  seed: 42
+  dt: 1.0e-7        # pas de temps ODE (s)
+  T_sim: 5.0e-3     # durée simulation (s)
