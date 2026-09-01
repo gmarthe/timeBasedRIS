@@ -16,8 +16,9 @@ neuron:
 
 encoding:
   T: 10
-  Iex_min: 75.0e-6    # juste au-dessus du seuil (~70 µA)
+  Iex_min: 75.0e-6    
   Iex_max: 150.0e-6
+  tau_syn: 50.0e-3 
 
 ris:
   N: 32

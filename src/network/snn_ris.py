@@ -50,11 +50,16 @@ class SNN_RIS:
         self.encoding_params = encoding_params
 
         # ── Poids synaptiques ─────────────────────────────────
-        # Initialisés uniformément dans [0, 1]
+        iex_target = 150e-6
         self.W_enc_hid = np.random.uniform(
-            0, 1, (n_features, n_hidden))
+            0.5 * iex_target / n_features,   # min
+            1.5 * iex_target / n_features,   # max
+            (n_features, n_hidden))
+
         self.W_hid_out = np.random.uniform(
-            0, 1, (n_hidden, n_phases))
+            0.5 * iex_target / n_hidden,
+            1.5 * iex_target / n_hidden,
+            (n_hidden, n_phases))
 
         # ── Délais synaptiques (fixes) ────────────────────────
         # Initialisés aléatoirement dans [0, d_max]
@@ -77,6 +82,7 @@ class SNN_RIS:
         self.st_max     = st_arr.max()
         self.st_to_iex  = build_st_to_iex_interpolator(
             iex_arr, st_arr)
+        self.tau_syn = encoding_params.get('tau_syn', 50e-3)
         print('Table OK | St range : [%.1f, %.1f] ms' % (
             self.st_min*1e3, self.st_max*1e3))
 
@@ -102,76 +108,92 @@ class SNN_RIS:
             t_enc.append(St)
         return t_enc
 
-    def forward_hidden(self, t_enc):
+    def _psp(self, t, t_pre, d, tau_syn=None):
         """
-        Calcule les spike times de la couche cachée.
+        Post-Synaptic Potential exponentiel.
 
-        Principe :
-          Chaque neurone caché j reçoit des spikes
-          de la couche encodage, retardés par D_enc_hid.
-          
-          Le spike le plus précoce et le plus fort
-          (poids élevé) dépolarise le neurone j.
-          
-          On approxime la latence du neurone j par :
-          t_hid_j = min_i(t_enc_i + D_enc_hid[i,j])
-                    pondéré par W_enc_hid[i,j]
+        ε(t - t_pre - d) = exp(-(t - t_pre - d) / τ_syn)
+                           si t > t_pre + d, sinon 0
 
         Parameters
         ----------
-        t_enc : list — spike times couche encodage (s)
+        t       : float — temps courant (s)
+        t_pre   : float — spike time pré-synaptique (s)
+        d       : float — délai synaptique (s)
+        tau_syn : float — constante de temps (s)
 
         Returns
         -------
-        t_hid : np.ndarray — spike times couche cachée (s)
-                             None si pas de spike
+        psp : float — valeur du PSP
+        """
+        t_arrive = t_pre + d
+        if t < t_arrive:
+            return 0.0
+        return np.exp(-(t - t_arrive) / tau_syn)
+
+    def _compute_iex_psp(self, t_pre_list, weights,
+                      delays, tau_syn=None):
+        if tau_syn is None:
+            tau_syn = self.tau_syn
+
+        #Capturer tau_syn dans la closure explicitement
+        _tau = tau_syn
+
+        def iex_fn(t):
+            total = 0.0
+            for i, t_pre in enumerate(t_pre_list):
+                if t_pre is None:
+                    continue
+                total += weights[i] * self._psp(
+                    t, t_pre, delays[i], _tau)  # ← _tau pas tau_syn
+            return total
+
+        return iex_fn
+
+    def forward_hidden(self, t_enc, tau_syn=None):
+        """
+        Calcule les spike times de la couche cachée
+        en simulant vraiment les neurones ML avec PSP.
+
+        Parameters
+        ----------
+        t_enc   : list  — spike times couche encodage (s)
+        tau_syn : float — constante de temps PSP (s)
+
+        Returns
+        -------
+        t_hid : list — spike times couche cachée (s)
+                       None si pas de spike
         """
         t_hid = []
 
         for j in range(self.n_hidden):
-            # Temps d'arrivée de chaque spike entrant
-            # sur le neurone j
-            contributions = []
-            for i, t_i in enumerate(t_enc):
-                if t_i is None:
-                    continue
-                # Spike i arrive à t_i + délai
-                t_arrive = t_i + self.D_enc_hid[i, j]
-                w        = self.W_enc_hid[i, j]
-                contributions.append((t_arrive, w))
+            # Fonction Iex(t) pour le neurone j
+            iex_fn = self._compute_iex_psp(
+                t_enc,
+                self.W_enc_hid[:, j],
+                self.D_enc_hid[:, j],
+                tau_syn)
 
-            if not contributions:
-                t_hid.append(None)
-                continue
+            # Simuler le neurone ML avec ce Iex(t)
+            t, Vm, n = simulate(
+                Iex=iex_fn,
+                params=self.params)
 
-            # Approximation de la latence du neurone j :
-            # moyenne pondérée des temps d'arrivée
-            # (spike fort + précoce → neurone j spike tôt)
-            t_arr = np.array([c[0] for c in contributions])
-            w_arr = np.array([c[1] for c in contributions])
-
-            # Normaliser les poids
-            w_sum = w_arr.sum()
-            if w_sum < 1e-10:
-                t_hid.append(None)
-                continue
-
-            # Latence approximée :
-            # contributions précoces ET fortes
-            # font spiker le neurone tôt
-            t_j = np.sum(w_arr * t_arr) / w_sum
-            t_hid.append(t_j)
+            St = time_to_first_spike(Vm, t)
+            t_hid.append(St)
 
         return t_hid
 
-    def forward_output(self, t_hid):
+    def forward_output(self, t_hid, tau_syn=None):
         """
-        Calcule les spike times de la couche de sortie.
-        Même principe que forward_hidden.
+        Calcule les spike times de la couche de sortie
+        en simulant vraiment les neurones ML avec PSP.
 
         Parameters
         ----------
-        t_hid : list — spike times couche cachée (s)
+        t_hid   : list  — spike times couche cachée (s)
+        tau_syn : float — constante de temps PSP (s)
 
         Returns
         -------
@@ -180,28 +202,18 @@ class SNN_RIS:
         t_out = []
 
         for k in range(self.n_phases):
-            contributions = []
-            for j, t_j in enumerate(t_hid):
-                if t_j is None:
-                    continue
-                t_arrive = t_j + self.D_hid_out[j, k]
-                w        = self.W_hid_out[j, k]
-                contributions.append((t_arrive, w))
+            iex_fn = self._compute_iex_psp(
+                t_hid,
+                self.W_hid_out[:, k],
+                self.D_hid_out[:, k],
+                tau_syn)
 
-            if not contributions:
-                t_out.append(None)
-                continue
+            t, Vm, n = simulate(
+                Iex=iex_fn,
+                params=self.params)
 
-            t_arr = np.array([c[0] for c in contributions])
-            w_arr = np.array([c[1] for c in contributions])
-            w_sum = w_arr.sum()
-
-            if w_sum < 1e-10:
-                t_out.append(None)
-                continue
-
-            t_k = np.sum(w_arr * t_arr) / w_sum
-            t_out.append(t_k)
+            St = time_to_first_spike(Vm, t)
+            t_out.append(St)
 
         return t_out
 

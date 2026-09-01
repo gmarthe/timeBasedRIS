@@ -57,34 +57,23 @@ def ml_ode(t, y, Iex, params):
 
 def simulate(Iex, params, T_sim=0.5, dt=1e-4):
     """
-    Simule le neurone Morris-Lecar.
-
-    Parameters
-    ----------
-    Iex    : float — courant d'excitation (A)
-    params : dict  — paramètres du modèle (depuis params.yaml)
-    T_sim  : float — durée de simulation (s)
-    dt     : float — pas de temps (s)
-
-    Returns
-    -------
-    t  : np.ndarray — vecteur temps (s)
-    Vm : np.ndarray — potentiel membranaire (V)
-    n  : np.ndarray — variable de potassium
+    Iex : float OU callable(t) — courant d'excitation
     """
-    # Conditions initiales : potentiel de repos
-    Vm0 = params['EK']   # proche du potentiel potassium
+    Vm0 = params['EK']
     n0  = nss(Vm0, params['V3'], params['V4'])
     y0  = [Vm0, n0]
 
-    t_span = (0, T_sim)
-    t_eval = np.arange(0, T_sim, dt)
+    # Si Iex est une constante, on en fait une fonction
+    if callable(Iex):
+        iex_fn = Iex
+    else:
+        iex_fn = lambda t: Iex
 
     sol = solve_ivp(
-        fun=lambda t, y: ml_ode(t, y, Iex, params),
-        t_span=t_span,
+        fun=lambda t, y: ml_ode(t, y, iex_fn(t), params),
+        t_span=(0, T_sim),
         y0=y0,
-        t_eval=t_eval,
+        t_eval=np.arange(0, T_sim, dt),
         method='RK45',
         max_step=dt * 10
     )
