@@ -16,8 +16,8 @@ neuron:
 
 encoding:
   T: 10
-  Iex_min: 10.0e-6   # A/cm²
-  Iex_max: 150.0e-6  # A/cm²
+  Iex_min: 75.0e-6    # juste au-dessus du seuil (~70 µA)
+  Iex_max: 150.0e-6
 
 ris:
   N: 32
