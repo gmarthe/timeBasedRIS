@@ -5,7 +5,7 @@ TTFS encoding + Morris-Lecar neurons + STDP learning.
 
 import numpy as np
 import yaml
-from src.neuron.morris_lecar import simulate, time_to_first_spike
+from src.neuron.morris_lecar import simulate, simulate_batch_parallel, time_to_first_spike
 from src.neuron.encoding import (
     build_iex_to_st_table,
     build_st_to_iex_interpolator,
@@ -28,7 +28,7 @@ class SNN_RIS:
     Délais        : fixes, initialisés aléatoirement
     """
 
-    def __init__(self, n_features=6, n_hidden=60,
+    def __init__(self, n_features=6, n_hidden=10,
                  n_phases=4, params=None,
                  encoding_params=None, seed=42):
         """
@@ -47,6 +47,13 @@ class SNN_RIS:
         self.n_hidden        = n_hidden
         self.n_phases        = n_phases
         self.params          = params
+
+        # Paramètres LIF pour les couches cachée et sortie
+        # ML avec GCa=0, GK=0 → comportement LIF
+        self.lif_params = params.copy()
+        self.lif_params['Gna'] = 0.0
+        self.lif_params['Gk']  = 0.0
+
         self.encoding_params = encoding_params
 
         # ── Poids synaptiques ─────────────────────────────────
@@ -83,30 +90,36 @@ class SNN_RIS:
         self.st_to_iex  = build_st_to_iex_interpolator(
             iex_arr, st_arr)
         self.tau_syn = encoding_params.get('tau_syn', 50e-3)
+        self.n_jobs = 7
         print('Table OK | St range : [%.1f, %.1f] ms' % (
             self.st_min*1e3, self.st_max*1e3))
 
     def encode(self, x_vec):
         """
         Encode un vecteur de features en spike times.
-
-        Parameters
-        ----------
-        x_vec : np.ndarray — features (n_features,)
-
-        Returns
-        -------
-        t_enc : np.ndarray — spike times couche encodage (s)
-                             None si pas de spike
+        Version vectorisée — 1 seul solve_ivp pour les 6 neurones.
         """
-        t_enc = []
+        from src.neuron.morris_lecar import (
+            simulate_batch_parallel, time_to_first_spike_batch)
+
+        # Calculer les Iex pour chaque feature
+        iex_list = []
         for x in x_vec:
             Iex, _ = canal_to_iex_uniform_st(
                 x, self.st_to_iex,
                 self.st_min, self.st_max)
-            St = iex_to_ttfs(Iex, simulate, self.params)
-            t_enc.append(St)
-        return t_enc
+            # Iex constant → fonction du temps
+            iex_list.append(lambda t, I=Iex: I)
+
+        # T_sim = T_sim par défaut (encodage ML complet)
+        T_sim = self.params.get('T_sim', 0.5)
+
+        # 1 seul appel pour tous les neurones d'encodage
+        t, Vms, ns = simulate_batch_parallel(
+            iex_list, self.params, T_sim=T_sim,
+            n_jobs=self.n_jobs)
+
+        return time_to_first_spike_batch(Vms, t)
 
     def _psp(self, t, t_pre, d, tau_syn=None):
         """
@@ -151,71 +164,60 @@ class SNN_RIS:
         return iex_fn
 
     def forward_hidden(self, t_enc, tau_syn=None):
-        """
-        Calcule les spike times de la couche cachée
-        en simulant vraiment les neurones ML avec PSP.
+        if tau_syn is None:
+            tau_syn = self.tau_syn
 
-        Parameters
-        ----------
-        t_enc   : list  — spike times couche encodage (s)
-        tau_syn : float — constante de temps PSP (s)
+        from src.neuron.morris_lecar import (
+            simulate_batch_parallel, time_to_first_spike_batch)
 
-        Returns
-        -------
-        t_hid : list — spike times couche cachée (s)
-                       None si pas de spike
-        """
-        t_hid = []
+        # T_sim = max sur tous les neurones
+        T_sim = max(
+            self._compute_t_sim_adaptive(
+                t_enc, self.D_enc_hid[:, j])
+            for j in range(self.n_hidden))
 
-        for j in range(self.n_hidden):
-            # Fonction Iex(t) pour le neurone j
-            iex_fn = self._compute_iex_psp(
+        # Construire les fonctions Iex pour chaque neurone
+        iex_fns = [
+            self._compute_iex_psp(
                 t_enc,
                 self.W_enc_hid[:, j],
                 self.D_enc_hid[:, j],
                 tau_syn)
+            for j in range(self.n_hidden)]
 
-            # Simuler le neurone ML avec ce Iex(t)
-            t, Vm, n = simulate(
-                Iex=iex_fn,
-                params=self.params)
+        # 1 seul appel solve_ivp pour toute la couche
+        t, Vms, ns = simulate_batch_parallel(
+            iex_fns, self.params, T_sim=T_sim,
+            n_jobs=self.n_jobs)
 
-            St = time_to_first_spike(Vm, t)
-            t_hid.append(St)
+        return time_to_first_spike_batch(Vms, t)
 
-        return t_hid
 
     def forward_output(self, t_hid, tau_syn=None):
-        """
-        Calcule les spike times de la couche de sortie
-        en simulant vraiment les neurones ML avec PSP.
+        if tau_syn is None:
+            tau_syn = self.tau_syn
 
-        Parameters
-        ----------
-        t_hid   : list  — spike times couche cachée (s)
-        tau_syn : float — constante de temps PSP (s)
+        from src.neuron.morris_lecar import (
+            simulate_batch_parallel, time_to_first_spike_batch)
 
-        Returns
-        -------
-        t_out : list — spike times couche sortie (s)
-        """
-        t_out = []
+        T_sim = max(
+            self._compute_t_sim_adaptive(
+                t_hid, self.D_hid_out[:, k])
+            for k in range(self.n_phases))
 
-        for k in range(self.n_phases):
-            iex_fn = self._compute_iex_psp(
+        iex_fns = [
+            self._compute_iex_psp(
                 t_hid,
                 self.W_hid_out[:, k],
                 self.D_hid_out[:, k],
                 tau_syn)
+            for k in range(self.n_phases)]
 
-            t, Vm, n = simulate(
-                Iex=iex_fn,
-                params=self.params)
+        t, Vms, ns = simulate_batch_parallel(
+            iex_fns, self.params, T_sim=T_sim,
+            n_jobs=self.n_jobs)
 
-            St = time_to_first_spike(Vm, t)
-            t_out.append(St)
-
-        return t_out
+        return time_to_first_spike_batch(Vms, t)
 
     def predict(self, x_vec):
         """
@@ -238,3 +240,31 @@ class SNN_RIS:
         phase_idx = decode_wta(t_out)
 
         return phase_idx, t_enc, t_hid, t_out
+
+    def _compute_t_sim_adaptive(self, t_pre_list, delays,
+                                margin_factor=5):
+        """
+        Calcule T_sim adaptatif.
+
+        T_sim = max(t_pre + d) + margin_factor × tau_syn
+
+        Parameters
+        ----------
+        t_pre_list    : list  — spike times pré-synaptiques
+        delays        : array — délais synaptiques
+        margin_factor : int   — facteur de marge
+
+        Returns
+        -------
+        T_sim : float — durée de simulation adaptative (s)
+        """
+        t_arrives = []
+        for i, t_pre in enumerate(t_pre_list):
+            if t_pre is None:
+                continue
+            t_arrives.append(t_pre + delays[i])
+
+        if not t_arrives:
+            return self.tau_syn * margin_factor
+
+        return max(t_arrives) + margin_factor * self.tau_syn

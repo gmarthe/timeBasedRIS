@@ -13,6 +13,7 @@ neuron:
   V3: 0.002        # ML fitting parameter (V)
   V4: 0.030        # ML fitting parameter (V)
   lambda0: 40.0    # reference frequency (Hz)
+  T_sim: 0.5
 
 encoding:
   T: 10
@@ -24,6 +25,7 @@ ris:
   N: 32
   n_bits: 2
   K: 1
+  n_hidden: 10
 
 channel:
   K_rician: 3
