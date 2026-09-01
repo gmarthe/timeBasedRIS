@@ -55,7 +55,7 @@ def ml_ode(t, y, Iex, params):
     return [dVm, dn]
 
 
-def simulate(Iex, params, T_sim=5e-3, dt=1e-7):
+def simulate(Iex, params, T_sim=0.5, dt=1e-4):
     """
     Simule le neurone Morris-Lecar.
 
