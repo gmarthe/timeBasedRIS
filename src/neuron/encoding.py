@@ -111,3 +111,48 @@ def encode_feature(x, st_to_iex_fn, simulate_fn,
         x, st_to_iex_fn, st_min, st_max)
     St = iex_to_ttfs(Iex, simulate_fn, params)
     return St, Iex, St_target
+
+def decode_wta(spike_times, n_phases=4):
+    """
+    Winner-Takes-All : la phase dont le neurone
+    de sortie spike en premier est choisie.
+
+    Parameters
+    ----------
+    spike_times : list of float or None
+                  latence de chaque neurone de sortie
+                  None si pas de spike
+    n_phases    : int — nombre de phases (2**n_bits)
+
+    Returns
+    -------
+    phase_idx : int   — indice de la phase gagnante
+                        -1 si aucun neurone n'a spiké
+    """
+    valid = [(i, st) for i, st in enumerate(spike_times)
+             if st is not None]
+
+    if not valid:
+        return -1
+
+    # Le gagnant est celui qui spike le plus tôt
+    winner = min(valid, key=lambda x: x[1])
+    return winner[0]
+
+
+def phase_idx_to_rad(phase_idx, n_bits=2):
+    """
+    Convertit un indice de phase en radians.
+
+    Parameters
+    ----------
+    phase_idx : int — indice de phase (0 à 2**n_bits - 1)
+    n_bits    : int — bits de quantification
+
+    Returns
+    -------
+    phi : float — phase en radians
+    """
+    niveaux = np.linspace(0, 2*np.pi, 2**n_bits,
+                          endpoint=False)
+    return niveaux[phase_idx]
